@@ -1,31 +1,42 @@
 
+import os
+import json
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import requests
-import os
+
+def env_int(key, default=0):
+    try:
+        val = os.getenv(key, str(default)).strip()
+        if val == "":
+            return int(default)
+        return int(val)
+    except Exception:
+        return int(default)
+
+def env_str(key, default=""):
+    val = os.getenv(key, default)
+    return (val or default).strip()
 
 app = Flask(__name__)
-CORS(app)  # Permite conexiones externas (WATI)
+CORS(app)
 
-# --- Config desde variables de entorno (si no quieres, puedes hardcodear como antes) ---
-CLICKUP_API_KEY = os.getenv('CLICKUP_API_KEY', 'REEMPLAZA_TU_API_KEY')
-LIST_ID = os.getenv('CLICKUP_LIST_ID', '901309521629')
-TEAM_ID = os.getenv('CLICKUP_TEAM_ID', '9013643983')
+CLICKUP_API_KEY = env_str('CLICKUP_API_KEY', '')
+LIST_ID = env_str('CLICKUP_LIST_ID', '')
+TEAM_ID = env_str('CLICKUP_TEAM_ID', '')
 
-# Mapeo de acciones del bot a tareas y usuarios en ClickUp
-# Puedes dejar los que ya tenías:
 ACCIONES_TO_TAREAS = {
     "📅 Reportar Pago": {
-        "tarea_id": os.getenv("TPL_REPORTE_PAGO_ID", "86a84h4xe"),
-        "asignado": int(os.getenv("ASSIGNEE_REPORTE_PAGO", "87984139"))
+        "tarea_id": env_str("TPL_REPORTE_PAGO_ID", ""),
+        "asignado": env_int("ASSIGNEE_REPORTE_PAGO", 0)
     },
     "📊 Consultar Estado": {
-        "tarea_id": os.getenv("TPL_CONSULTAR_ESTADO_ID", "86a84h4zd"),
-        "asignado": int(os.getenv("ASSIGNEE_CONSULTAR_ESTADO", "126166932"))
+        "tarea_id": env_str("TPL_CONSULTAR_ESTADO_ID", ""),
+        "asignado": env_int("ASSIGNEE_CONSULTAR_ESTADO", 0)
     },
     "📄 Cesión de derechos": {
-        "tarea_id": os.getenv("TPL_CESION_DERECHOS_ID", "86a84h52a"),
-        "asignado": int(os.getenv("ASSIGNEE_CESION_DERECHOS", "87984139"))
+        "tarea_id": env_str("TPL_CESION_DERECHOS_ID", ""),
+        "asignado": env_int("ASSIGNEE_CESION_DERECHOS", 0)
     }
 }
 
@@ -34,123 +45,126 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-def clonar_subtareas(original_task_id, nueva_task_id, assignee_id):
-    # Render no requiere ngrok; usa la URL pública que te da Render
-    # Endpoint correcto para listar subtareas por 'parent' desde una LISTA
-    subtareas_url = f"https://api.clickup.com/api/v2/list/{LIST_ID}/task"
-    params = {"parent": original_task_id}
-    subtareas_response = requests.get(subtareas_url, headers=HEADERS, params=params)
-
-    if subtareas_response.status_code != 200:
-        print("⚠️ No se pudieron obtener las subtareas:", subtareas_response.text)
-        return
-
-    subtareas = subtareas_response.json().get("tasks", [])
-
-    for sub in subtareas:
-        nueva_subtarea = {
-            "name": sub.get("name", "Subtarea"),
-            "description": sub.get("description", "") or "",
-            "assignees": [assignee_id] if assignee_id else [],
-            "tags": [tag.get("name") for tag in (sub.get("tags") or [])],
-            "parent": nueva_task_id
-        }
-
-        crear_sub_url = f"https://api.clickup.com/api/v2/list/{LIST_ID}/task"
-        crear_sub_response = requests.post(crear_sub_url, headers=HEADERS, json=nueva_subtarea)
-
-        if crear_sub_response.status_code in [200, 201]:
-            print(f"✅ Subtarea clonada: {sub.get('name')}")
-        else:
-            print(f"❌ Error al clonar subtarea {sub.get('name')}: {crear_sub_response.text}")
-
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"ok": True}), 200
+    return jsonify({
+        "ok": True,
+        "has_key": bool(CLICKUP_API_KEY),
+        "list_id_set": bool(LIST_ID),
+        "tpls": {k: bool(v.get("tarea_id")) for k, v in ACCIONES_TO_TAREAS.items()}
+    }), 200
 
-@app.route('/wati-webhook', methods=['POST'])
-def clonar_tarea_clickup():
-    print("📩 Petición recibida:")
+def log(msg):
+    print(msg, flush=True)
+
+def _get_task(task_id):
+    url = f"https://api.clickup.com/api/v2/task/{task_id}"
+    r = requests.get(url, headers=HEADERS)
+    if r.status_code != 200:
+        raise RuntimeError(f"GET task {task_id} failed: {r.status_code} {r.text}")
+    return r.json()
+
+def _create_task(payload):
+    url = f"https://api.clickup.com/api/v2/list/{LIST_ID}/task"
+    r = requests.post(url, headers=HEADERS, json=payload)
+    if r.status_code not in (200, 201):
+        raise RuntimeError(f"CREATE task failed: {r.status_code} {r.text}")
+    return r.json()
+
+def _comment(task_id, text, assignees=None):
+    url = f"https://api.clickup.com/api/v2/task/{task_id}/comment"
+    body = {"comment_text": text, "rich_text": True}
+    if assignees:
+        body["assignees"] = assignees
+    r = requests.post(url, headers=HEADERS, json=body)
+    return r.status_code in (200, 201)
+
+def _list_subtasks(parent_task_id, page=0):
+    url = f"https://api.clickup.com/api/v2/list/{LIST_ID}/task"
+    params = {"parent": parent_task_id, "page": page}
+    r = requests.get(url, headers=HEADERS, params=params)
+    if r.status_code != 200:
+        raise RuntimeError(f"LIST subtasks for {parent_task_id} failed: {r.status_code} {r.text}")
+    data = r.json()
+    return data.get("tasks", []), data.get("last_page", True)
+
+def _priority_val(p):
+    if isinstance(p, int) and p in (1,2,3,4):
+        return p
+    if isinstance(p, dict):
+        v = p.get("priority")
+        if isinstance(v, int) and v in (1,2,3,4):
+            return v
+    return None
+
+def clonar_subtareas(original_task_id, nueva_task_id, assignee_id):
+    page = 0
+    while True:
+        tasks, last = _list_subtasks(original_task_id, page=page)
+        for sub in tasks:
+            payload = {
+                "name": sub.get("name") or "Subtarea",
+                "description": sub.get("description") or "",
+                "assignees": [assignee_id] if assignee_id else [],
+                "tags": [t.get("name") for t in (sub.get("tags") or [])],
+                "parent": nueva_task_id
+            }
+            pr = _priority_val(sub.get("priority"))
+            if pr:
+                payload["priority"] = pr
+            _create_task(payload)
+            log(f"✅ Subtarea clonada: {sub.get('name')}")
+        if last:
+            break
+        page += 1
+
+@app.route("/wati-webhook", methods=["POST"])
+def wati():
     try:
         data = request.get_json(force=True) or {}
-        print("📦 Datos procesados:", data)
+        log("📦 Datos procesados: " + json.dumps(data, ensure_ascii=False))
+
+        if not CLICKUP_API_KEY:
+            return jsonify({"error": "CLICKUP_API_KEY no configurado"}), 500
+        if not LIST_ID:
+            return jsonify({"error": "CLICKUP_LIST_ID no configurado"}), 500
 
         accion = data.get("acciones") or data.get("accion") or data.get("action")
-        if accion not in ACCIONES_TO_TAREAS:
-            print("❌ Acción no reconocida:", accion)
-            return jsonify({"error": "Acción no reconocida"}), 400
+        if not accion or accion not in ACCIONES_TO_TAREAS:
+            return jsonify({"error": "Acción no reconocida", "accion": accion}), 400
 
-        config = ACCIONES_TO_TAREAS[accion]
-        tarea_id_original = config["tarea_id"]
-        assignee_id = config["asignado"]
+        cfg = ACCIONES_TO_TAREAS[accion]
+        plantilla_id = cfg.get("tarea_id")
+        assignee_id = cfg.get("asignado") or 0
+        if not plantilla_id:
+            return jsonify({"error": "TPL_ID no configurado para esta acción"}), 400
 
-        # 1. Obtener tarea original
-        get_url = f"https://api.clickup.com/api/v2/task/{tarea_id_original}"
-        original_response = requests.get(get_url, headers=HEADERS)
-        if original_response.status_code != 200:
-            print("❌ Error al obtener tarea:", original_response.text)
-            return jsonify({"error": "No se pudo obtener la tarea original"}), 500
+        plantilla = _get_task(plantilla_id)
+        pr = _priority_val(plantilla.get("priority"))
+        tags = [t.get("name") for t in (plantilla.get("tags") or [])]
+        nombre = data.get("name") or data.get("nombre") or "Sin nombre"
+        telefono = data.get("phone") or data.get("telefono") or "Sin teléfono"
 
-        original_task = original_response.json()
-
-        # 2. Prioridad (si viene como dict o int)
-        priority_value = original_task.get("priority")
-        if isinstance(priority_value, dict):
-            priority_value = priority_value.get("priority")
-        if priority_value not in [1, 2, 3, 4]:
-            priority_value = None
-
-        # 3. Preparar datos para nueva tarea
-        new_task_name = f"{original_task.get('name','Tarea')} - {data.get('name', 'Sin nombre')}"
-        new_task_data = {
-            "name": new_task_name,
-            "description": f"Teléfono: {data.get('phone', 'Sin teléfono')}\n\n{original_task.get('description', '') or ''}",
-            "tags": [t.get("name") for t in (original_task.get("tags") or [])],
+        payload = {
+            "name": f"{plantilla.get('name','Tarea')} - {nombre}",
+            "description": f"Teléfono: {telefono}\n\n{plantilla.get('description') or ''}",
+            "tags": tags,
             "assignees": [assignee_id] if assignee_id else []
         }
-        if priority_value:
-            new_task_data["priority"] = priority_value
+        if pr:
+            payload["priority"] = pr
 
-        # Copiar estatus si existe
-        status = original_task.get("status")
-        if isinstance(status, dict) and status.get("status"):
-            new_task_data["status"] = status["status"]
-        elif isinstance(status, str) and status:
-            new_task_data["status"] = status
+        nueva = _create_task(payload)
+        nueva_id = nueva.get("id")
 
-        # 4. Crear nueva tarea clonada
-        create_url = f"https://api.clickup.com/api/v2/list/{LIST_ID}/task"
-        create_response = requests.post(create_url, headers=HEADERS, json=new_task_data)
-        print("📤 Intentando crear tarea clonada")
-
-        if create_response.status_code in [200, 201]:
-            nueva_task = create_response.json()
-            nueva_task_id = nueva_task.get("id")
-            print("✅ Tarea clonada con éxito. ID:", nueva_task_id)
-
-            # 5. Agregar comentario
-            comentario_url = f"https://api.clickup.com/api/v2/task/{nueva_task_id}/comment"
-            comentario_body = {
-                "comment_text": f"<@{assignee_id}> tienes una nueva tarea asignada automáticamente 🎯",
-                "assignees": [assignee_id] if assignee_id else [],
-                "rich_text": True
-            }
-            requests.post(comentario_url, headers=HEADERS, json=comentario_body)
-
-            # 6. Clonar subtareas
-            clonar_subtareas(tarea_id_original, nueva_task_id, assignee_id)
-
-            return jsonify({"status": "Tarea y subtareas clonadas exitosamente", "new_task_id": nueva_task_id}), 201
+        if assignee_id:
+            _comment(nueva_id, f"<@{assignee_id}> nueva tarea creada automáticamente.", [assignee_id])
         else:
-            print("❌ Error al crear tarea:", create_response.text)
-            return jsonify({"error": "No se pudo crear la tarea clonada"}), 500
+            _comment(nueva_id, "Nueva tarea creada automáticamente desde WATI.")
+
+        clonar_subtareas(plantilla_id, nueva_id, assignee_id)
+        return jsonify({"status": "Tarea y subtareas clonadas exitosamente", "new_task_id": nueva_id}), 201
 
     except Exception as e:
-        import traceback
-        print("🔥 Excepción:", str(e))
-        traceback.print_exc()
-        return jsonify({"error": "Excepción inesperada", "detalle": str(e)}), 500
-
-# Nota: en Render se inicia con gunicorn, no hace falta app.run()
-# if __name__ == '__main__':
-#     app.run(host='0.0.0.0', port=5050)
+        log(f"🔥 Error: {e}")
+        return jsonify({"error": str(e)}), 500

@@ -5,23 +5,23 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120 --log-level info
     envVars:
       - key: CLICKUP_API_KEY
         sync: false
       - key: CLICKUP_LIST_ID
-        value: "901309521629"
+        sync: false
       - key: CLICKUP_TEAM_ID
-        value: "9013643983"
+        sync: false
       - key: TPL_REPORTE_PAGO_ID
-        value: "86a84h4xe"
+        sync: false
       - key: ASSIGNEE_REPORTE_PAGO
-        value: "87984139"
+        sync: false
       - key: TPL_CONSULTAR_ESTADO_ID
-        value: "86a84h4zd"
+        sync: false
       - key: ASSIGNEE_CONSULTAR_ESTADO
-        value: "126166932"
+        sync: false
       - key: TPL_CESION_DERECHOS_ID
-        value: "86a84h52a"
+        sync: false
       - key: ASSIGNEE_CESION_DERECHOS
-        value: "87984139"
+        sync: false
