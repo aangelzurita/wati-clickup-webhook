@@ -37,8 +37,29 @@ ACCIONES_TO_TAREAS = {
     "📄 Cesión de derechos": {
         "tarea_id": env_str("TPL_CESION_DERECHOS_ID", ""),
         "asignado": env_int("ASSIGNEE_CESION_DERECHOS", 0)
+    },
+    "🧾 Facturar Pagos": {
+        "tarea_id": env_str("TPL_FACTURAR_PAGOS_ID", ""),
+        "asignado": env_int("ASSIGNEE_FACTURAR_PAGOS", 0)
+    },
+    "🚀 Nueva Inversión": {
+        "tarea_id": env_str("TPL_NUEVA_INVERSION_ID", ""),
+        "asignado": env_int("ASSIGNEE_NUEVA_INVERSION", 0)
+    },
+    "💲 Precio Actualizado": {
+        "tarea_id": env_str("TPL_PRECIO_ACTUALIZADO_ID", ""),
+        "asignado": env_int("ASSIGNEE_PRECIO_ACTUALIZADO", 0)
+    },
+    "⚖️ Asesoría personal": {
+        "tarea_id": env_str("TPL_ASESORIA_PERSONAL_ID", ""),
+        "asignado": env_int("ASSIGNEE_ASESORIA_PERSONAL", 0)
+    },
+    "👥 Referidos +2%": {
+        "tarea_id": env_str("TPL_REFERIDOS_ID", ""),
+        "asignado": env_int("ASSIGNEE_REFERIDOS", 0)
     }
 }
+
 
 HEADERS = {
     "Authorization": CLICKUP_API_KEY,
